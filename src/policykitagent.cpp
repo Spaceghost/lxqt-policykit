@@ -31,7 +31,6 @@
 #include <PolkitQt1/Subject>
 
 #include <QMessageBox>
-#include <QPointer>
 
 #include "policykitagent.h"
 #include "policykitagentgui.h"
@@ -52,8 +51,11 @@ PolicykitAgent::PolicykitAgent(QObject *parent)
       m_userCancelled(false),
       m_errorShown(false),
       m_infoShown(false),
+      m_shuttingDown(false),
       m_authenticationAttempts(0),
-      m_gui(nullptr)
+      m_requestId(0),
+      m_gui(nullptr),
+      m_result(nullptr)
 {
     PolkitQt1::UnixSessionSubject session(getpid());
     registerListener(session, QStringLiteral("/org/lxqt/PolicyKit1/AuthenticationAgent"));
@@ -61,19 +63,27 @@ PolicykitAgent::PolicykitAgent(QObject *parent)
 
 PolicykitAgent::~PolicykitAgent()
 {
-    if (m_gui != nullptr)
-    {
-        m_gui->blockSignals(true);
-        m_gui->deleteLater();
-    }
-    deleteSessions();
+    m_shuttingDown = true;
+    finishAuthentication(m_result);
 }
 
 void PolicykitAgent::deleteSessions()
 {
-    for (auto i = m_SessionIdentity.begin(), i_e = m_SessionIdentity.end(); i != i_e; ++i)
-        delete i.key();
+    const auto sessions = m_SessionIdentity.keys();
+    const auto activeSessions = m_activeSessions;
     m_SessionIdentity.clear();
+    m_activeSessions.clear();
+    for (auto *session : sessions)
+    {
+        disconnect(session, nullptr, this, nullptr);
+        if (m_gui)
+            disconnect(m_gui, nullptr, session, nullptr);
+        // PolkitQt releases the native session after emitting completed().
+        // Never cancel a completed session or destroy its wrapper in that signal.
+        if (activeSessions.contains(session))
+            session->cancel();
+        session->deleteLater();
+    }
 }
 
 void PolicykitAgent::createSession(const PolkitQt1::Identity &identity,
@@ -82,13 +92,19 @@ void PolicykitAgent::createSession(const PolkitQt1::Identity &identity,
 {
     auto *session = new PolkitQt1::Agent::Session(identity, cookie, result);
     m_SessionIdentity[session] = identity;
-    connect(session, &PolkitQt1::Agent::Session::request, this, &PolicykitAgent::request);
-    connect(session, &PolkitQt1::Agent::Session::completed, this, &PolicykitAgent::completed);
-    connect(session, &PolkitQt1::Agent::Session::showError, this, &PolicykitAgent::showError);
-    connect(session, &PolkitQt1::Agent::Session::showInfo, this, &PolicykitAgent::showInfo);
+    m_activeSessions.insert(session);
+    connect(session, &PolkitQt1::Agent::Session::completed, this, [this, session] {
+        m_activeSessions.remove(session);
+        if (m_gui)
+            disconnect(m_gui, nullptr, session, nullptr);
+    });
+    // Let the native callback finish before entering UI code or completing a request.
+    connect(session, &PolkitQt1::Agent::Session::request, this, &PolicykitAgent::request, Qt::QueuedConnection);
+    connect(session, &PolkitQt1::Agent::Session::completed, this, &PolicykitAgent::completed, Qt::QueuedConnection);
+    connect(session, &PolkitQt1::Agent::Session::showError, this, &PolicykitAgent::showError, Qt::QueuedConnection);
+    connect(session, &PolkitQt1::Agent::Session::showInfo, this, &PolicykitAgent::showInfo, Qt::QueuedConnection);
     session->initiate();
 }
-
 
 void PolicykitAgent::initiateAuthentication(const QString &actionId,
                                             const QString &message,
@@ -98,82 +114,113 @@ void PolicykitAgent::initiateAuthentication(const QString &actionId,
                                             const PolkitQt1::Identity::List &identities,
                                             PolkitQt1::Agent::AsyncResult *result)
 {
-    if (m_inProgress)
+    if (m_inProgress || m_shuttingDown)
     {
-	const QString & info = tr("Another authentication is in progress. Please try again later.");
-        if (!m_inProgressAlert) {
+        const QString info = tr("Another authentication is in progress. Please try again later.");
+        if (!m_inProgressAlert && !m_shuttingDown)
+        {
             m_inProgressAlert = true;
-	    QMessageBox::information(nullptr, tr("PolicyKit Information"), info);
-
-            m_inProgressAlert = false;
+            auto *box = new QMessageBox(QMessageBox::Information, tr("PolicyKit Information"),
+                                       info, QMessageBox::Ok, m_gui);
+            box->setAttribute(Qt::WA_DeleteOnClose);
+            connect(box, &QObject::destroyed, this, [this] { m_inProgressAlert = false; });
+            box->show();
         }
         result->setError(info);
         result->setCompleted();
         return;
     }
+    ++m_requestId;
     m_inProgress = true;
+    m_result = result;
     m_userCancelled = false;
     m_errorShown = false;
     m_infoShown = false;
     m_authenticationAttempts = 0;
     m_lastError.clear();
     m_cookie = cookie;
-    deleteSessions();
 
-    if (m_gui != nullptr)
+    if (identities.isEmpty())
     {
-        delete m_gui;
-        m_gui = nullptr;
+        result->setError(tr("Authentication failed"));
+        finishAuthentication(result);
+        return;
     }
     m_gui = new PolicykitAgentGUI(actionId, message, iconName, details, identities);
-
-    for(const PolkitQt1::Identity& i : identities)
-    {
-        createSession(i, cookie, result);
-    }
+    // Rejecting the password dialog cancels the request, including every identity.
+    connect(m_gui, &QDialog::rejected, this, &PolicykitAgent::cancelAuthentication);
+    for (const PolkitQt1::Identity &identity : identities)
+        createSession(identity, cookie, result);
 }
 
 bool PolicykitAgent::initiateAuthenticationFinish()
 {
-    // dunno what are those for...
-    m_inProgress = false;
-    m_cookie.clear();
+    // Per-request state is already cleared by finishAuthentication(). A finish
+    // callback for a rejected/previous request must not clear the current one.
     return true;
 }
 
 void PolicykitAgent::cancelAuthentication()
 {
-    // dunno what are those for...
+    if (!m_result)
+        return;
+    m_userCancelled = true;
+    finishAuthentication(m_result);
+}
+
+void PolicykitAgent::finishAuthentication(PolkitQt1::Agent::AsyncResult *result)
+{
+    if (!result || m_result != result)
+        return;
+    // Invalidate callbacks before cancelling helpers or notifying the caller.
+    ++m_requestId;
+    m_result = nullptr;
     m_inProgress = false;
     m_cookie.clear();
+    deleteSessions();
+    if (m_messageBox)
+    {
+        m_messageBox->hide();
+        m_messageBox = nullptr;
+    }
+    if (m_gui)
+    {
+        m_gui->blockSignals(true);
+        m_gui->hide();
+        m_gui->deleteLater();
+        m_gui = nullptr;
+    }
+    // The shared AsyncResult is completed exactly once, including cancellation.
+    // Do not access request state after this potentially reentrant callback.
+    result->setCompleted();
 }
 
 void PolicykitAgent::request(const QString &request, bool echo)
 {
-    PolkitQt1::Agent::Session *session = qobject_cast<PolkitQt1::Agent::Session *>(sender());
-    Q_ASSERT(session);
-    Q_ASSERT(m_gui);
-
-    // PAM may still ask for a password after showInfo (e.g. account locked); don't.
-    if (m_infoShown) {
+    auto *session = qobject_cast<PolkitQt1::Agent::Session *>(sender());
+    if (!m_inProgress || !m_gui || !m_activeSessions.contains(session))
+        return;
+    if (m_infoShown)
+    {
         session->cancel();
         return;
     }
-
-    PolkitQt1::Identity identity = m_SessionIdentity[session];
+    const auto identity = m_SessionIdentity.value(session);
     m_gui->setPrompt(identity, request, echo);
-    connect(m_gui, &QDialog::finished, session, [this, session] (int result)
+    // A new prompt replaces, rather than accumulates, this session's callback.
+    disconnect(m_gui, &QDialog::finished, session, nullptr);
+    auto *result = m_result;
+    const auto requestId = m_requestId;
+    connect(m_gui, &QDialog::finished, session, [this, session, result, requestId] (int choice)
     {
-        if (result == QDialog::Accepted)
+        if (m_requestId != requestId || m_result != result || !m_activeSessions.contains(session))
+            return;
+        if (choice == QDialog::Accepted)
         {
-            if (m_gui->identity() == m_SessionIdentity[session].toString())
+            if (m_gui->identity() == m_SessionIdentity.value(session).toString())
                 session->setResponse(m_gui->response());
             else
                 session->cancel();
-        }
-        else {
-            m_userCancelled = true;
-            session->cancel();
         }
     }, Qt::SingleShotConnection);
     m_gui->show();
@@ -181,78 +228,120 @@ void PolicykitAgent::request(const QString &request, bool echo)
     m_gui->raise();
 }
 
+QMessageBox *PolicykitAgent::createMessage(QMessageBox::Icon icon, const QString &title,
+                                          const QString &text, QMessageBox::StandardButtons buttons)
+{
+    auto *box = new QMessageBox(icon, title, text, buttons, m_gui);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowModality(Qt::ApplicationModal);
+    box->setDefaultButton(QMessageBox::Ok);
+    m_messageBox = box;
+    connect(box, &QDialog::finished, this, [this, box] {
+        if (m_messageBox == box)
+            m_messageBox = nullptr;
+    });
+    return box;
+}
+
 void PolicykitAgent::completed(bool gainedAuthorization)
 {
-    PolkitQt1::Agent::Session * session = qobject_cast<PolkitQt1::Agent::Session *>(sender());
-    Q_ASSERT(session);
-    Q_ASSERT(m_gui);
+    auto *session = qobject_cast<PolkitQt1::Agent::Session *>(sender());
+    if (!m_inProgress || !m_gui || !m_SessionIdentity.contains(session))
+        return;
+    const auto identity = m_SessionIdentity.take(session);
+    disconnect(session, nullptr, this, nullptr);
+    disconnect(m_gui, nullptr, session, nullptr);
+    session->deleteLater();
+    if (m_gui->identity() != identity.toString())
+        return;
 
-    const QPointer<PolkitQt1::Agent::Session> sessionGuard(session);
-    const PolkitQt1::Identity identity = m_SessionIdentity.value(session);
-    const bool selectedIdentity = m_gui->identity() == identity.toString();
-    PolkitQt1::Agent::AsyncResult *result = session->result();
-
-    if (m_inProgress && selectedIdentity)
+    auto *result = m_result;
+    const auto requestId = m_requestId;
+    if (m_messageBox)
     {
-        if (!gainedAuthorization && !m_userCancelled && !m_infoShown
-            && ++m_authenticationAttempts < maximumAuthenticationAttempts)
-        {
-            const auto choice = QMessageBox::information(nullptr, tr("Authorization Failed"),
-                tr("Authentication failed. Trying again?"),
-                QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Ok);
+        // Preserve the backend message and wait for acknowledgement without
+        // keeping a native signal callback or a nested event loop on the stack.
+        connect(m_messageBox, &QDialog::finished, this,
+                [this, identity, result, gainedAuthorization, requestId] {
+            completeAttempt(identity, result, gainedAuthorization, requestId);
+        }, Qt::SingleShotConnection);
+        return;
+    }
+    completeAttempt(identity, result, gainedAuthorization, requestId);
+}
 
-            // A new request may have replaced this session during the modal dialog.
-            if (!sessionGuard)
+void PolicykitAgent::completeAttempt(const PolkitQt1::Identity &identity,
+                                     PolkitQt1::Agent::AsyncResult *result,
+                                     bool gainedAuthorization, quint64 requestId)
+{
+    if (m_requestId != requestId || m_result != result || !m_inProgress)
+        return;
+    if (!gainedAuthorization && !m_userCancelled && !m_infoShown
+        && ++m_authenticationAttempts < maximumAuthenticationAttempts)
+    {
+        auto *box = createMessage(QMessageBox::Information, tr("Authorization Failed"),
+            tr("Authentication failed. Trying again?"), QMessageBox::Ok | QMessageBox::Cancel);
+        connect(box, &QDialog::finished, this, [this, identity, result, requestId] (int choice) {
+            if (m_requestId != requestId || m_result != result)
                 return;
-
-            if (choice == QMessageBox::Ok && m_inProgress && !m_userCancelled && !m_infoShown)
+            if (choice == QMessageBox::Ok && !m_userCancelled && !m_infoShown)
             {
                 m_errorShown = false;
                 m_infoShown = false;
                 m_lastError.clear();
-                // A completed Polkit session cannot be reused; start a new PAM conversation.
                 createSession(identity, m_cookie, result);
-                return;
             }
-
-            // Finish the original request without another failure notice or session.
-            m_userCancelled = true;
-        }
-
-        if (!gainedAuthorization && !m_userCancelled && !m_errorShown)
-        {
-            const QString text = m_lastError.isEmpty()
-                ? tr("Authentication failed")
-                : m_lastError;
-            QMessageBox::information(nullptr, tr("Authorization Failed"), text);
-        }
-
-        if (!sessionGuard)
-            return;
-
-        // Clear our state before completion can call back into the listener.
-        m_inProgress = false;
-        m_cookie.clear();
-        // Note: the setCompleted() must be called exactly once (as the
-        // AsyncResult is shared by all the sessions)
-        result->setCompleted();
+            else
+            {
+                m_userCancelled = true;
+                finishAuthentication(result);
+            }
+        }, Qt::SingleShotConnection);
+        box->show();
+        return;
     }
+    if (!gainedAuthorization && !m_userCancelled && !m_errorShown)
+    {
+        const QString text = m_lastError.isEmpty() ? tr("Authentication failed") : m_lastError;
+        auto *box = createMessage(QMessageBox::Information, tr("Authorization Failed"), text);
+        connect(box, &QDialog::finished, this, [this, result, requestId] {
+            if (m_requestId == requestId)
+                finishAuthentication(result);
+        }, Qt::SingleShotConnection);
+        box->show();
+        return;
+    }
+    finishAuthentication(result);
+}
+
+void PolicykitAgent::showBackendMessage(const QString &text, bool informational)
+{
+    auto *session = qobject_cast<PolkitQt1::Agent::Session *>(sender());
+    if (!m_inProgress || !m_gui || !m_SessionIdentity.contains(session)
+        || m_gui->identity() != m_SessionIdentity.value(session).toString())
+        return;
+    m_lastError = text;
+    m_errorShown = true;
+    m_infoShown = m_infoShown || informational;
+    if (m_messageBox)
+    {
+        const QString previous = m_messageBox->informativeText();
+        m_messageBox->setInformativeText(previous.isEmpty() ? text : previous + QLatin1Char('\n') + text);
+        return;
+    }
+    auto *box = createMessage(informational ? QMessageBox::Information : QMessageBox::Warning,
+        informational ? tr("PolicyKit Information") : tr("PolicyKit Error"), text);
+    box->show();
 }
 
 void PolicykitAgent::showError(const QString &text)
 {
-    m_lastError = text;
-    m_errorShown = true;
-    QMessageBox::warning(nullptr, tr("PolicyKit Error"), text);
+    showBackendMessage(text, false);
 }
 
 void PolicykitAgent::showInfo(const QString &text)
 {
-    m_lastError = text;
-    m_errorShown = true;
-    m_infoShown = true;
-    // Blocking so callers only see their error after the user dismisses this.
-    QMessageBox::information(nullptr, tr("PolicyKit Information"), text);
+    showBackendMessage(text, true);
 }
 
 } //namespace
