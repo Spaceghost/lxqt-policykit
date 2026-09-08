@@ -15,7 +15,7 @@ jobs:
         run: >-
           dnf install -y git gcc-c++ clang cmake ninja-build python3
           qt6-qtbase-devel qt6-qttools-devel polkit-devel polkit-qt6-1-devel
-          liblxqt-devel libasan libubsan
+          liblxqt-devel kf6-kwindowsystem-devel libasan libubsan
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
