@@ -31,6 +31,7 @@
 #include <PolkitQt1/Subject>
 
 #include <QMessageBox>
+#include <QPointer>
 
 #include "policykitagent.h"
 #include "policykitagentgui.h"
@@ -186,6 +187,7 @@ void PolicykitAgent::completed(bool gainedAuthorization)
     Q_ASSERT(session);
     Q_ASSERT(m_gui);
 
+    const QPointer<PolkitQt1::Agent::Session> sessionGuard(session);
     const PolkitQt1::Identity identity = m_SessionIdentity.value(session);
     const bool selectedIdentity = m_gui->identity() == identity.toString();
     PolkitQt1::Agent::AsyncResult *result = session->result();
@@ -195,15 +197,26 @@ void PolicykitAgent::completed(bool gainedAuthorization)
         if (!gainedAuthorization && !m_userCancelled && !m_infoShown
             && ++m_authenticationAttempts < maximumAuthenticationAttempts)
         {
-            if (!m_errorShown)
-                QMessageBox::information(nullptr, tr("Authorization Failed"), tr("Authentication failed. Please try again."));
+            const auto choice = QMessageBox::information(nullptr, tr("Authorization Failed"),
+                tr("Authentication failed. Trying again?"),
+                QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Ok);
 
-            m_errorShown = false;
-            m_infoShown = false;
-            m_lastError.clear();
-            // A completed Polkit session cannot be reused; start a new PAM conversation.
-            createSession(identity, m_cookie, result);
-            return;
+            // A new request may have replaced this session during the modal dialog.
+            if (!sessionGuard)
+                return;
+
+            if (choice == QMessageBox::Ok && m_inProgress && !m_userCancelled && !m_infoShown)
+            {
+                m_errorShown = false;
+                m_infoShown = false;
+                m_lastError.clear();
+                // A completed Polkit session cannot be reused; start a new PAM conversation.
+                createSession(identity, m_cookie, result);
+                return;
+            }
+
+            // Finish the original request without another failure notice or session.
+            m_userCancelled = true;
         }
 
         if (!gainedAuthorization && !m_userCancelled && !m_errorShown)
@@ -214,11 +227,15 @@ void PolicykitAgent::completed(bool gainedAuthorization)
             QMessageBox::information(nullptr, tr("Authorization Failed"), text);
         }
 
-        // Note: the setCompleted() must be called exacly once (as the
-        // AsyncResult is shared by all the sessions)
-        result->setCompleted();
+        if (!sessionGuard)
+            return;
+
+        // Clear our state before completion can call back into the listener.
         m_inProgress = false;
         m_cookie.clear();
+        // Note: the setCompleted() must be called exactly once (as the
+        // AsyncResult is shared by all the sessions)
+        result->setCompleted();
     }
 }
 
