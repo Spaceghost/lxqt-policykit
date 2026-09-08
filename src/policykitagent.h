@@ -37,6 +37,9 @@
 
 #include <QApplication>
 #include <QHash>
+#include <QMessageBox>
+#include <QPointer>
+#include <QSet>
 
 namespace LXQtPolicykit
 {
@@ -72,17 +75,32 @@ private:
                        const QString &cookie,
                        PolkitQt1::Agent::AsyncResult *result);
     void deleteSessions();
+    void finishAuthentication(PolkitQt1::Agent::AsyncResult *result);
+    void completeAttempt(const PolkitQt1::Identity &identity,
+                         PolkitQt1::Agent::AsyncResult *result,
+                         bool gainedAuthorization, bool responseSubmitted,
+                         quint64 requestId);
+    QMessageBox *createMessage(QMessageBox::Icon icon, const QString &title,
+                              const QString &text,
+                              QMessageBox::StandardButtons buttons = QMessageBox::Ok);
+    void showBackendMessage(const QString &text, bool informational);
 
     bool m_inProgress;
     bool m_inProgressAlert;
     bool m_userCancelled;
     bool m_errorShown;
     bool m_infoShown;
+    bool m_shuttingDown;
     int m_authenticationAttempts;
+    quint64 m_requestId;
     QString m_lastError;
     QString m_cookie;
     PolicykitAgentGUI * m_gui;
+    PolkitQt1::Agent::AsyncResult *m_result;
+    QPointer<QMessageBox> m_messageBox;
     QHash<PolkitQt1::Agent::Session*,PolkitQt1::Identity> m_SessionIdentity;
+    QSet<PolkitQt1::Agent::Session*> m_activeSessions;
+    QSet<PolkitQt1::Agent::Session*> m_submittedSessions;
 };
 
 } // namespace
