@@ -21,6 +21,17 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Record source and dependency versions
+        run: |
+          mkdir -p "$RUNNER_TEMP/retry-validation"
+          git -c safe.directory="$GITHUB_WORKSPACE" bundle create "$RUNNER_TEMP/retry-validation/source.bundle" --all
+          {
+            git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD
+            cmake --version
+            g++ --version
+            clang++ --version
+            rpm -q qt6-qtbase-devel polkit-devel polkit-qt6-1-devel liblxqt-devel
+          } > "$RUNNER_TEMP/retry-validation/versions.txt"
       - name: Verify the clean production snapshot
         run: |
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code \
@@ -39,14 +50,30 @@ jobs:
           grep -E 'review_|100% tests passed' /tmp/gcc-tests.log
           CXX=clang++ python3 test/test_retry_completion.py > /tmp/clang-tests.log 2>&1 \
             || { tail -n 100 /tmp/clang-tests.log; exit 1; }
-          tail -n 4 /tmp/clang-tests.log
+          grep '100% tests passed' /tmp/clang-tests.log
       - name: Test with address and undefined-behavior sanitizers
         run: |
           python3 test/test_retry_completion.py --sanitize > /tmp/sanitizer-tests.log 2>&1 \
             || { tail -n 100 /tmp/sanitizer-tests.log; exit 1; }
-          tail -n 4 /tmp/sanitizer-tests.log
+          grep '100% tests passed' /tmp/sanitizer-tests.log
       - name: Verify regressions and mutations fail at runtime
         run: |
           python3 test/lifecycle/check_regressions.py > /tmp/negative-controls.log 2>&1 \
             || { tail -n 100 /tmp/negative-controls.log; exit 1; }
           grep 'REJECTED at runtime:' /tmp/negative-controls.log
+      - name: Collect build and test logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/retry-validation"
+          for log in dependencies application-build gcc-tests clang-tests sanitizer-tests negative-controls; do
+            if test -f "/tmp/$log.log"; then
+              cp "/tmp/$log.log" "$RUNNER_TEMP/retry-validation/"
+            fi
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: retry-validation-${{ github.sha }}
+          path: ${{ runner.temp }}/retry-validation
+          if-no-files-found: error
+          retention-days: 30
