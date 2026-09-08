@@ -1,85 +1,78 @@
-# Retry-completion regression tests
+# Authentication cancellation and lifecycle regression tests
 
-The runner extracts `PolicykitAgent::completed()` and its attempt limit from
-`src/policykitagent.cpp` at test time and compiles that exact method. It does
-not maintain a second implementation of the retry decision.
-
-## Run
-
-With Python 3 and a C++17 compiler:
+Run from the repository root:
 
 ```sh
 python3 test/test_retry_completion.py
 CXX=clang++ python3 test/test_retry_completion.py
-CXXFLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
-  python3 test/test_retry_completion.py
+python3 test/test_retry_completion.py --sanitize
+python3 test/lifecycle/check_regressions.py
 ```
 
-With Qt 6 Widgets development tools (including moc and pkg-config):
+The first three commands compile **both complete production translation
+units**, their real headers, the actual .ui file, and generated Qt metaobjects.
+They use real QMessageBox, password-dialog signals, PolkitQt Session,
+PolkitQt AsyncResult, and GObject signal/refcount behavior. They no longer
+extract completed() into a duplicate listener/state model. `--qt` remains an
+accepted compatibility flag; Qt/PolkitQt development packages are now required
+for every mode. `--source-tree PATH` selects an alternate complete checkout;
+`--case REGEX` selects CTest cases. Unknown selections fail rather than pass.
 
-```sh
-QT_QPA_PLATFORM=offscreen python3 test/test_retry_completion.py --qt
-```
+## Dependencies and CI
 
-`--qt` uses actual QMessageBox buttons, Escape and window-close events, and
-actual QPointer destruction tracking. The default mode uses lightweight
-control-flow doubles and requires no Qt installation. Set `MOC` if Qt's moc
-executable is not in a standard location. Each run has a 30-second runtime
-limit so an unexpected modal dialog cannot hang a runner indefinitely.
+The separate cancellation branch workflow uses a GitHub-hosted Ubuntu runner
+with a Fedora 44 container. It installs Qt 6, polkit-qt6, liblxqt, CMake, GCC,
+Clang and sanitizer development dependencies, builds the entire application
+with its original minimum dependency versions unchanged, and runs this suite.
+The container does not register an authentication agent or change host PAM
+configuration. The workflow is restricted to retry-authentication-cancel.
 
-The workflow in this branch runs both modes on a GitHub-hosted Ubuntu runner.
-It is restricted to the separate cancellation branch, not the upstream PR
-branch. The unit harness can use Qt 6.4 supplied by Ubuntu 24.04; it does not
-lower the application's Qt 6.6 minimum or build the complete application.
+## Coverage
 
-## Coverage and boundaries
+Thirty isolated-process scenarios cover the password dialog and retry question
+(Cancel, Escape, close, rejection, unexpected result); exact text/buttons;
+bounded retries and successful authorization; backend-error acknowledgement
+before retry; informational-terminal suppression; externally initiated
+cancellation while entering a password or answering a question; native
+completion queued during cancellation; stale messages and answers after a
+replacement request; later requests and synchronous result callbacks; finish
+callbacks that must not reset another request; unrelated identities; cancelling
+all identities; multiple challenge prompts; synchronous helper failure;
+shutdown; empty identity lists; concurrent requests; and the native callback
+boundary. Repeated cancellation runs thirty consecutive requests and checks
+that no response was submitted. Tests assert helper creation, cancellation,
+response counts, native-object teardown, result completion, and visible UI.
 
-The 21 scenarios cover Cancel, Escape, close, rejection and unexpected dialog
-results; exact text and button set; retry with and without a preceding backend
-error; three total attempts; successful completion; already-cancelled and
-informational-terminal states; unselected identities; cancellation/terminal
-state arriving during the question; replaced sessions; and synchronous
-completion callbacks. They assert session-start and result-completion counts.
+Each CTest case has a ten-second timeout. Python build/configure/run steps also
+have deadlines. The negative-control runner compiles the previous cancellation
+commit and four intentionally broken variants successfully before requiring
+runtime test failures. Build failures are not accepted as regression evidence.
 
-In both modes, Session, AsyncResult, GUI identity selection, and the surrounding
-listener state are test doubles. Tests call the extracted completion method
-directly: they do not exercise listener registration, the password dialog's
-signals, native Polkit session ownership, PAM, account lockout, or the complete
-application. In particular, the stale-session test asserts that an old dialog
-cannot touch the replacement request; it does not assert that the full
-listener has completed or cleaned up every superseded request.
+## Boundaries
 
-The default-mode suite was also checked against the original PR implementation
-and mutations that ignore Cancel, return before completion, retry after an
-external cancellation, remove the session guards, or clear state after a
-completion callback. All failed runtime assertions. To check an earlier source:
+The native helper transport and agent registration C functions are interposed
+with a deterministic GObject test implementation. This exercises the installed
+PolkitQt wrapper and its actual signal/lifetime behavior, but does **not** run
+PAM, a privileged authentication helper, the Polkit daemon's cancellation
+protocol, system-bus registration, or a real desktop session. Offscreen Qt is
+not a visual or window-manager integration test. Success in the fixture means
+the fake backend reported authorization; it does not bypass real authorization.
 
-```sh
-git show 1d0eb3feb688318855d4a754f78aa4ea6aa4cd97:src/policykitagent.cpp > /tmp/agent-before.cpp
-python3 test/test_retry_completion.py --source /tmp/agent-before.cpp
-# Expected failure, not a passing test of the old implementation.
-```
+ASan/UBSan instrument the full agent and test code, not the distribution's
+precompiled Qt/Polkit libraries. Leak detection is disabled for this mixed
+library harness; passing sanitizers is not a whole-process leak-free claim.
+The helper teardown checks remain enabled in every mode.
 
-## Live verification still required
+## Live validation still required
 
-Build the complete agent normally and use an isolated desktop session and a
-disposable account. Do not risk locking the real user's account or change PAM
-policy to make the tests pass. Ensure only the agent under test is registered.
+Use a disposable account and an isolated login session. Exercise wrong password
+then Cancel/escape/window-close; retry then successful password; retry exhaustion;
+password cancellation; caller cancellation while either dialog is visible;
+multiple eligible identities; and a later request after each cancellation.
+Check that Cancel launches no further helper and the caller is not left pending.
 
-Check a denied password followed by Cancel, Escape, and window close: the
-original caller must return without authorization, no replacement helper must
-start, and no extra generic failure message should appear. Check OK then a
-correct password, three denied attempts, a backend error before failure, an
-informational terminal condition, cancellation from the original password
-form, multiple identities, and a new request immediately after cancellation.
-
-Also cancel the requesting operation while its retry question is open. An OK
-answer must not start another helper. This patch does not redesign the existing
-cancelAuthentication() override or automatically dismiss all agent windows on
-daemon-side cancellation; broader listener/session lifetime behavior needs a
-live Polkit test.
-
-Compare the reviewer's repeated save-and-cancel reproduction with the original
-PR under the same PAM configuration. Preventing the next retry does not undo
-an earlier failed password or establish a fix for backend lockout accounting.
-Do not log passwords or authentication cookies during these checks.
+Reproduce the reviewer's repeated-save-and-cancel report against the same PAM
+configuration both before and after this patch. A submitted failure cannot be
+undone, and this change does not reset, weaken, or make claims about backend
+account-lockout policy. The existing interpretation of showInfo as terminal is
+preserved rather than redesigned here.
