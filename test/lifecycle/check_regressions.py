@@ -96,7 +96,9 @@ def main():
         # Each mutation corresponds to an observable promise in the PR/review,
         # not to a private state layout invented by the test.
         review_mutations = [
-            ('retry-without-submission', '&& responseSubmitted &&', '&&',
+            # Preserve a use of the parameter under -Werror while bypassing it.
+            ('retry-without-submission', '&& responseSubmitted &&',
+             '&& (static_cast<void>(responseSubmitted), true) &&',
              'no_response_failure', 'unsubmitted_failure_is_terminal'),
             ('unowned-session-wrapper', 'Session(identity, cookie, result, this)',
              'Session(identity, cookie, result)',
