@@ -12,23 +12,36 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Install build and test dependencies
-        run: >-
-          dnf install -y git gcc-c++ clang cmake ninja-build python3
-          qt6-qtbase-devel qt6-qttools-devel polkit-devel polkit-qt6-1-devel
-          liblxqt-devel kf6-kwindowsystem-devel libasan libubsan
+        run: |
+          dnf install -y git gcc-c++ clang cmake ninja-build python3 \
+            qt6-qtbase-devel qt6-qttools-devel polkit-devel polkit-qt6-1-devel \
+            liblxqt-devel kf6-kwindowsystem-devel libasan libubsan > /tmp/dependencies.log 2>&1 \
+            || { tail -n 80 /tmp/dependencies.log; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Build the complete application
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DUPDATE_TRANSLATIONS=OFF
-          cmake --build build --parallel 2
+          { cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DUPDATE_TRANSLATIONS=OFF \
+            && cmake --build build --parallel 2; } > /tmp/application-build.log 2>&1 \
+            || { tail -n 80 /tmp/application-build.log; exit 1; }
+          tail -n 5 /tmp/application-build.log
       - name: Test full agent with GCC and Clang
         run: |
-          python3 test/test_retry_completion.py
-          CXX=clang++ python3 test/test_retry_completion.py
+          python3 test/test_retry_completion.py > /tmp/gcc-tests.log 2>&1 \
+            || { tail -n 100 /tmp/gcc-tests.log; exit 1; }
+          tail -n 4 /tmp/gcc-tests.log
+          CXX=clang++ python3 test/test_retry_completion.py > /tmp/clang-tests.log 2>&1 \
+            || { tail -n 100 /tmp/clang-tests.log; exit 1; }
+          tail -n 4 /tmp/clang-tests.log
       - name: Test with address and undefined-behavior sanitizers
-        run: python3 test/test_retry_completion.py --sanitize
+        run: |
+          python3 test/test_retry_completion.py --sanitize > /tmp/sanitizer-tests.log 2>&1 \
+            || { tail -n 100 /tmp/sanitizer-tests.log; exit 1; }
+          tail -n 4 /tmp/sanitizer-tests.log
       - name: Verify regressions and mutations fail at runtime
-        run: python3 test/lifecycle/check_regressions.py
+        run: |
+          python3 test/lifecycle/check_regressions.py > /tmp/negative-controls.log 2>&1 \
+            || { tail -n 100 /tmp/negative-controls.log; exit 1; }
+          grep 'REJECTED at runtime:' /tmp/negative-controls.log
