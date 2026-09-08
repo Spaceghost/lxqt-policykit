@@ -12,6 +12,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(POLKIT REQUIRED IMPORTED_TARGET polkit-agent-1)
 add_executable(test_agent_lifecycle
     test_agent_lifecycle.cpp
+    agent_fixture.h
+    review_cases.h
+    lifecycle_cases.h
+    attempt_cases.h
     ${AGENT_SOURCE_DIR}/src/policykitagent.cpp
     ${AGENT_SOURCE_DIR}/src/policykitagent.h
     ${AGENT_SOURCE_DIR}/src/policykitagentgui.cpp
@@ -27,8 +31,13 @@ target_link_options(test_agent_lifecycle PRIVATE -Wl,--export-dynamic)
 target_compile_options(test_agent_lifecycle PRIVATE -Wall -Wextra -Werror -Wno-deprecated-declarations)
 option(ENABLE_SANITIZERS "Instrument the application and test code" OFF)
 if(ENABLE_SANITIZERS)
-    target_compile_options(test_agent_lifecycle PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(test_agent_lifecycle PRIVATE -fsanitize=address,undefined)
+    add_library(lifecycle_sanitizers INTERFACE)
+    target_compile_options(lifecycle_sanitizers INTERFACE
+        -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    target_link_options(lifecycle_sanitizers INTERFACE -fsanitize=address,undefined)
+    target_link_libraries(test_agent_lifecycle PRIVATE lifecycle_sanitizers)
+    add_executable(sanitizer_probe sanitizer_probe.cpp)
+    target_link_libraries(sanitizer_probe PRIVATE lifecycle_sanitizers)
 endif()
 enable_testing()
 set(CASES cancel_password escape_password close_password cancel_retry escape_retry close_retry
@@ -46,9 +55,32 @@ set(REVIEW_CASES
     review_backend_error_consent review_empty_submit_is_attempt
     review_replaced_prompt_once review_cancelled_password_stays_cancelled
     review_backend_lockout_respected)
-foreach(case IN LISTS CASES REVIEW_CASES)
+set(ATTEMPT_CASES
+    no_response_failure
+    no_response_error
+    retry_startup_failure
+    success_without_response
+    cancel_before_first_prompt
+    multi_challenge_attempt_budget
+    cancel_second_challenge
+    unselected_failure_no_budget
+    delayed_identity_prompt
+    owned_object_churn
+    shutdown_owns_wrappers
+    stale_backend_acknowledgement
+    repeated_retry_answer)
+foreach(case IN LISTS CASES REVIEW_CASES ATTEMPT_CASES)
     add_test(NAME ${case} COMMAND test_agent_lifecycle ${case})
     set_tests_properties(${case} PROPERTIES TIMEOUT 10
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;G_DEBUG=fatal-criticals;ASAN_OPTIONS=detect_leaks=0")
 endforeach()
 set_tests_properties(${REVIEW_CASES} PROPERTIES LABELS "pr-review-173")
+set_tests_properties(${ATTEMPT_CASES} PROPERTIES LABELS "attempt-contract")
+set_tests_properties(owned_object_churn PROPERTIES TIMEOUT 45)
+if(ENABLE_SANITIZERS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME sanitizer_enforcement
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verify_sanitizers.py
+                $<TARGET_FILE:sanitizer_probe>)
+    set_tests_properties(sanitizer_enforcement PROPERTIES TIMEOUT 40 LABELS "sanitizer-control")
+endif()

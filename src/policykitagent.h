@@ -78,7 +78,8 @@ private:
     void finishAuthentication(PolkitQt1::Agent::AsyncResult *result);
     void completeAttempt(const PolkitQt1::Identity &identity,
                          PolkitQt1::Agent::AsyncResult *result,
-                         bool gainedAuthorization, quint64 requestId);
+                         bool gainedAuthorization, bool responseSubmitted,
+                         quint64 requestId);
     QMessageBox *createMessage(QMessageBox::Icon icon, const QString &title,
                               const QString &text,
                               QMessageBox::StandardButtons buttons = QMessageBox::Ok);
@@ -99,6 +100,7 @@ private:
     QPointer<QMessageBox> m_messageBox;
     QHash<PolkitQt1::Agent::Session*,PolkitQt1::Identity> m_SessionIdentity;
     QSet<PolkitQt1::Agent::Session*> m_activeSessions;
+    QSet<PolkitQt1::Agent::Session*> m_submittedSessions;
 };
 
 } // namespace

@@ -3,13 +3,23 @@ on:
   push:
     branches: [validation/retry-authentication-cancel]
   workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full production commit SHA; defaults to test/production-revision
+        required: false
+        type: string
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   regression:
     runs-on: ubuntu-24.04
     container: fedora:44
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      REQUESTED_CANDIDATE: ${{ inputs.candidate_sha }}
     steps:
       - name: Install build and test dependencies
         run: |
@@ -21,53 +31,66 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Record source and dependency versions
+      - name: Check out the exact production candidate
+        run: |
+          candidate="${REQUESTED_CANDIDATE:-$(cat test/production-revision)}"
+          [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full commit SHA is required'; exit 1; }
+          git -c safe.directory="$GITHUB_WORKSPACE" cat-file -e "$candidate^{commit}"
+          git -c safe.directory="$GITHUB_WORKSPACE" diff --check "$candidate^" "$candidate"
+          git -c safe.directory="$GITHUB_WORKSPACE" worktree add --detach "$RUNNER_TEMP/production" "$candidate"
+          echo "SOURCE_TREE=$RUNNER_TEMP/production" >> "$GITHUB_ENV"
+          echo "CANDIDATE_SHA=$candidate" >> "$GITHUB_ENV"
+      - name: Record reproducible source and dependency versions
         run: |
           mkdir -p "$RUNNER_TEMP/retry-validation"
           git -c safe.directory="$GITHUB_WORKSPACE" bundle create "$RUNNER_TEMP/retry-validation/source.bundle" --all
           {
-            git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD
+            echo "Validation: $GITHUB_SHA"
+            echo "Production: $CANDIDATE_SHA"
             cmake --version
             g++ --version
             clang++ --version
             rpm -q qt6-qtbase-devel polkit-devel polkit-qt6-1-devel liblxqt-devel
           } > "$RUNNER_TEMP/retry-validation/versions.txt"
-      - name: Verify the clean production snapshot
+      - name: Build the complete application in Debug and Release
         run: |
-          git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code \
-            b8b412fcb1696491f7554ceb2d5891c543a76ae0 -- \
-            src CMakeLists.txt autostart translations
-      - name: Build the complete application
+          for type in Debug Release; do
+            { cmake -S "$SOURCE_TREE" -B "$RUNNER_TEMP/application-$type" -G Ninja \
+                -DCMAKE_BUILD_TYPE="$type" -DUPDATE_TRANSLATIONS=OFF \
+              && cmake --build "$RUNNER_TEMP/application-$type" --parallel 2; } \
+              > "$RUNNER_TEMP/retry-validation/application-$type.log" 2>&1 \
+              || { tail -n 80 "$RUNNER_TEMP/retry-validation/application-$type.log"; exit 1; }
+          done
+      - name: Run GCC, Clang, optimized and fatal-sanitizer tests
         run: |
-          { cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DUPDATE_TRANSLATIONS=OFF \
-            && cmake --build build --parallel 2; } > /tmp/application-build.log 2>&1 \
-            || { tail -n 80 /tmp/application-build.log; exit 1; }
-          tail -n 5 /tmp/application-build.log
-      - name: Test full agent with GCC and Clang
+          run_tests() {
+            name="$1"; shift
+            python3 test/test_retry_completion.py --source-tree "$SOURCE_TREE" \
+              --results-dir "$RUNNER_TEMP/retry-validation/$name" "$@" \
+              > "/tmp/$name.log" 2>&1 || { tail -n 120 "/tmp/$name.log"; return 1; }
+            grep '100% tests passed' "/tmp/$name.log"
+          }
+          CXX=g++ run_tests gcc-debug
+          CXX=clang++ run_tests clang-debug
+          CXX=g++ run_tests gcc-release --build-type Release
+          CXX=g++ run_tests sanitizers --sanitize
+      - name: Verify historical regressions and mutations
         run: |
-          python3 test/test_retry_completion.py > /tmp/gcc-tests.log 2>&1 \
-            || { tail -n 100 /tmp/gcc-tests.log; exit 1; }
-          grep -E 'review_|100% tests passed' /tmp/gcc-tests.log
-          CXX=clang++ python3 test/test_retry_completion.py > /tmp/clang-tests.log 2>&1 \
-            || { tail -n 100 /tmp/clang-tests.log; exit 1; }
-          grep '100% tests passed' /tmp/clang-tests.log
-      - name: Test with address and undefined-behavior sanitizers
+          python3 test/lifecycle/check_regressions.py --source-tree "$SOURCE_TREE" \
+            > "$RUNNER_TEMP/retry-validation/negative-controls.log" 2>&1 \
+            || { tail -n 120 "$RUNNER_TEMP/retry-validation/negative-controls.log"; exit 1; }
+          grep 'REJECTED at runtime:' "$RUNNER_TEMP/retry-validation/negative-controls.log"
+      - name: Verify tests left the production checkout unchanged
         run: |
-          python3 test/test_retry_completion.py --sanitize > /tmp/sanitizer-tests.log 2>&1 \
-            || { tail -n 100 /tmp/sanitizer-tests.log; exit 1; }
-          grep '100% tests passed' /tmp/sanitizer-tests.log
-      - name: Verify regressions and mutations fail at runtime
-        run: |
-          python3 test/lifecycle/check_regressions.py > /tmp/negative-controls.log 2>&1 \
-            || { tail -n 100 /tmp/negative-controls.log; exit 1; }
-          grep 'REJECTED at runtime:' /tmp/negative-controls.log
-      - name: Collect build and test logs
+          git -c safe.directory="$SOURCE_TREE" -C "$SOURCE_TREE" diff --exit-code
+          test -z "$(git -c safe.directory="$SOURCE_TREE" -C "$SOURCE_TREE" ls-files --others --exclude-standard)"
+      - name: Collect setup and test logs
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/retry-validation"
-          for log in dependencies application-build gcc-tests clang-tests sanitizer-tests negative-controls; do
-            if test -f "/tmp/$log.log"; then
-              cp "/tmp/$log.log" "$RUNNER_TEMP/retry-validation/"
+          for name in dependencies gcc-debug clang-debug gcc-release sanitizers; do
+            if test -f "/tmp/$name.log"; then
+              cp "/tmp/$name.log" "$RUNNER_TEMP/retry-validation/"
             fi
           done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

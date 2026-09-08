@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Compile every negative control, then require its expected runtime assertion."""
+import argparse
 import os
 from pathlib import Path
 import re
@@ -52,6 +53,10 @@ def historical_source(root, name, revision):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source-tree', type=Path, default=ROOT)
+    args = parser.parse_args()
+    source_tree = args.source_tree.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='lxqt-negative-') as tmp:
         root = Path(tmp)
         baseline = historical_source(root, 'baseline', BASELINE)
@@ -62,7 +67,11 @@ def main():
         reviewed = historical_source(root, 'reviewed-pr', REVIEWED_PR)
         run_case(reviewed, 'reviewed-pr-missing-cancel', 'review_retry_contract',
                  'retry_cancel_button', review=True)
-        original = (ROOT / 'src/policykitagent.cpp').read_text()
+        previous = historical_source(root, 'previous-submission-contract',
+                                     '9cf457fa7ad6c08faf23f24bc7f0a9069421d53d')
+        run_case(previous, 'previous-retries-unsubmitted-failure', 'no_response_failure',
+                 'unsubmitted_failure_is_terminal', review=True)
+        original = (source_tree / 'src/policykitagent.cpp').read_text()
         ended = 'result.calls == 1 && int(helpers.size()) == starts'
         mutations = [
             ('ignore-cancel', 'choice == QMessageBox::Ok && !m_userCancelled',
@@ -87,6 +96,11 @@ def main():
         # Each mutation corresponds to an observable promise in the PR/review,
         # not to a private state layout invented by the test.
         review_mutations = [
+            ('retry-without-submission', '&& responseSubmitted &&', '&&',
+             'no_response_failure', 'unsubmitted_failure_is_terminal'),
+            ('unowned-session-wrapper', 'Session(identity, cookie, result, this)',
+             'Session(identity, cookie, result)',
+             'owned_object_churn', 'agent_owns_session_wrappers'),
             ('review-old-wording', 'Authentication failed. Trying again?',
              'Authentication failed. Please try again.',
              'review_retry_contract', 'retry_question_text'),
@@ -113,7 +127,7 @@ def main():
                 if original.count(before) != 1:
                     raise RuntimeError(f'Mutation anchor changed: {name}')
                 source = root / name
-                shutil.copytree(ROOT / 'src', source / 'src')
+                shutil.copytree(source_tree / 'src', source / 'src')
                 (source / 'src/policykitagent.cpp').write_text(original.replace(before, after, 1))
                 run_case(source, name, case, expected, review=is_review)
 
