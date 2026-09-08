@@ -36,7 +36,7 @@ set(CASES cancel_password escape_password close_password cancel_retry escape_ret
     external_cancel_password external_cancel_retry cancel_before_completion_delivery
     stale_delivery stale_dialog request_after_native_completion new_request reentrant_result finish_callback other_identity
     multiple_identities multi_prompt synchronous_completion destruction empty_identities
-    busy_request native_callback_boundary repeated_cancel)
+    busy_request native_callback_boundary repeated_cancel dead_identity second_identity_retry)
 foreach(case IN LISTS CASES)
     add_test(NAME ${case} COMMAND test_agent_lifecycle ${case})
     set_tests_properties(${case} PROPERTIES TIMEOUT 10

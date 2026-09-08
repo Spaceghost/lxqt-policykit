@@ -253,7 +253,11 @@ void PolicykitAgent::completed(bool gainedAuthorization)
     disconnect(m_gui, nullptr, session, nullptr);
     session->deleteLater();
     if (m_gui->identity() != identity.toString())
+    {
+        // There is no live conversation to answer for this choice anymore.
+        m_gui->removeIdentity(identity);
         return;
+    }
 
     auto *result = m_result;
     const auto requestId = m_requestId;

@@ -29,24 +29,27 @@ configuration. The workflow is restricted to retry-authentication-cancel.
 
 ## Coverage
 
-Thirty isolated-process scenarios cover the password dialog and retry question
-(Cancel, Escape, close, rejection, unexpected result); exact text/buttons;
-bounded retries and successful authorization; backend-error acknowledgement
-before retry; informational-terminal suppression; externally initiated
-cancellation while entering a password or answering a question; native
-completion queued during cancellation; stale messages and answers after a
-replacement request; later requests and synchronous result callbacks; finish
-callbacks that must not reset another request; unrelated identities; cancelling
-all identities; multiple challenge prompts; synchronous helper failure;
-shutdown; empty identity lists; concurrent requests; and the native callback
-boundary. Repeated cancellation runs thirty consecutive requests and checks
-that no response was submitted. Tests assert helper creation, cancellation,
-response counts, native-object teardown, result completion, and visible UI.
+Thirty-two isolated-process scenarios cover the password dialog and retry
+question (Cancel, Escape, close, rejection, unexpected result); exact
+text/buttons; bounded retries and successful authorization; backend-error
+acknowledgement before retry; informational-terminal suppression; externally
+initiated cancellation while entering a password or answering a question;
+native completion queued during cancellation; stale messages and answers
+after a replacement request; later requests and synchronous result callbacks;
+finish callbacks that must not reset another request; unrelated identities;
+cancelling all identities; multiple challenge prompts; synchronous helper
+failure; shutdown; empty identity lists; concurrent requests; and the native
+callback boundary. They also check removal of identities with ended sessions
+and retrying as the second available identity without selecting dead helpers.
+Repeated cancellation runs thirty consecutive requests and checks that no
+response was submitted. Tests assert helper creation, cancellation, response
+counts, native-object teardown, result completion, and visible UI.
 
 Each CTest case has a ten-second timeout. Python build/configure/run steps also
 have deadlines. The negative-control runner compiles the previous cancellation
-commit and four intentionally broken variants successfully before requiring
-runtime test failures. Build failures are not accepted as regression evidence.
+commit and intentionally broken variants successfully before requiring exit 1
+and the particular runtime assertion expected for each regression. A build
+failure, crash, timeout, or unrelated assertion is not accepted as evidence.
 
 ## Boundaries
 

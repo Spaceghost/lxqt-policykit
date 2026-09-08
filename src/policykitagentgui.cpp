@@ -92,6 +92,14 @@ void PolicykitAgentGUI::setPrompt(const PolkitQt1::Identity &identity, const QSt
     }
 }
 
+void PolicykitAgentGUI::removeIdentity(const PolkitQt1::Identity &identity)
+{
+    const int ix = identityComboBox->findText(identity.toString());
+    // Keep the selected identity for a possible fresh authentication attempt.
+    if (ix != -1 && ix != identityComboBox->currentIndex())
+        identityComboBox->removeItem(ix);
+}
+
 QString PolicykitAgentGUI::identity()
 {
     Q_ASSERT(identityComboBox->currentIndex() != -1);

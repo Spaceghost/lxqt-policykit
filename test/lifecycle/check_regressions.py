@@ -71,6 +71,9 @@ def main():
              'bool PolicykitAgent::initiateAuthenticationFinish()\n{',
              'bool PolicykitAgent::initiateAuthenticationFinish()\n{\n    m_inProgress = false;',
              'finish_callback', ended),
+            ('keep-dead-identity', '        m_gui->removeIdentity(identity);',
+             '        // Deliberately retain the dead choice.',
+             'dead_identity', 'choices->count() == 1'),
         ]
         for name, before, after, case, expected in mutations:
             if original.count(before) != 1:

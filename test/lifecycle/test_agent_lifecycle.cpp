@@ -303,6 +303,24 @@ int main(int argc, char **argv)
         Fixture f(true); gui()->reject(); f.ended(2);
         CHECK(helpers[0]->cancels == 1 && helpers[1]->cancels == 1);
         CHECK(helpers[0]->responses == 0 && helpers[1]->responses == 0);
+    } else if (name == "dead_identity") {
+        Fixture f(true);
+        complete(*helpers[1]); pump();
+        auto *choices = gui()->findChild<QComboBox *>(QStringLiteral("identityComboBox"));
+        CHECK(choices->count() == 1);
+        CHECK(choices->currentText() == helpers[0]->identity);
+        helpers[0]->gain = true; f.submit(); f.ended(2);
+    } else if (name == "second_identity_retry") {
+        Fixture f(true);
+        gui()->findChild<QComboBox *>(QStringLiteral("identityComboBox"))->setCurrentIndex(1);
+        f.submit(); retryQuestion(); button(QMessageBox::Ok);
+        waitFor([] { return gui(); });
+        auto *choices = gui()->findChild<QComboBox *>(QStringLiteral("identityComboBox"));
+        CHECK(choices->count() == 1);
+        CHECK(choices->currentText() == helpers[1]->identity);
+        CHECK(helpers.size() == 3 && helpers[2]->identity == helpers[1]->identity);
+        CHECK(helpers[0]->responses == 0 && helpers[0]->cancels == 1);
+        helpers[2]->gain = true; f.submit(); f.ended(3);
     } else if (name == "multi_prompt") {
         Fixture f; helpers[0]->prompts = 2; helpers[0]->gain = true;
         f.submit(); CHECK(helpers[0]->responses == 1 && f.result.calls == 0);

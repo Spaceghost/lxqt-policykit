@@ -58,6 +58,7 @@ public:
     ~PolicykitAgentGUI() override;
 
     void setPrompt(const PolkitQt1::Identity &identity, const QString &text, bool echo);
+    void removeIdentity(const PolkitQt1::Identity &identity);
     /*! \brief Returns currently selected identity (serialized by toString())
      */
     QString identity();
