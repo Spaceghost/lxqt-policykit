@@ -6,7 +6,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(AGENT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." CACHE PATH "Agent source tree under test")
-find_package(Qt6 6.6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 6.6 REQUIRED COMPONENTS Widgets Test)
 find_package(PolkitQt6-1 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(POLKIT REQUIRED IMPORTED_TARGET polkit-agent-1)
@@ -19,7 +19,7 @@ add_executable(test_agent_lifecycle
     ${AGENT_SOURCE_DIR}/src/policykitagentgui.ui)
 target_include_directories(test_agent_lifecycle PRIVATE
     ${AGENT_SOURCE_DIR}/src ${POLKITQT-1_INCLUDE_DIR})
-target_link_libraries(test_agent_lifecycle PRIVATE Qt6::Widgets
+target_link_libraries(test_agent_lifecycle PRIVATE Qt6::Widgets Qt6::Test
     ${POLKITQT-1_CORE_LIBRARY} ${POLKITQT-1_AGENT_LIBRARY} PkgConfig::POLKIT)
 # Only the native helper boundary is interposed. Session/AsyncResult/Qt and
 # both complete production translation units are used without test rewriting.
@@ -37,8 +37,18 @@ set(CASES cancel_password escape_password close_password cancel_retry escape_ret
     stale_delivery stale_dialog request_after_native_completion new_request reentrant_result finish_callback other_identity
     multiple_identities multi_prompt synchronous_completion destruction empty_identities
     busy_request native_callback_boundary repeated_cancel dead_identity second_identity_retry)
-foreach(case IN LISTS CASES)
+# stefonarch's cancellation report and tsujan's requested retry question in PR #173.
+set(REVIEW_CASES
+    review_three_saves_cancel review_three_saves_typed_cancel
+    review_three_saves_escape review_three_saves_close
+    review_three_saves_multi_identity review_three_saves_retry_cancel
+    review_retry_contract review_retry_enter review_second_retry_cancel
+    review_backend_error_consent review_empty_submit_is_attempt
+    review_replaced_prompt_once review_cancelled_password_stays_cancelled
+    review_backend_lockout_respected)
+foreach(case IN LISTS CASES REVIEW_CASES)
     add_test(NAME ${case} COMMAND test_agent_lifecycle ${case})
     set_tests_properties(${case} PROPERTIES TIMEOUT 10
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;G_DEBUG=fatal-criticals;ASAN_OPTIONS=detect_leaks=0")
 endforeach()
+set_tests_properties(${REVIEW_CASES} PROPERTIES LABELS "pr-review-173")

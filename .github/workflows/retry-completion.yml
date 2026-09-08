@@ -1,7 +1,7 @@
 name: Retry completion regression
 on:
   push:
-    branches: [retry-authentication-cancel]
+    branches: [validation/retry-authentication-cancel]
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,6 +21,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Verify the clean production snapshot
+        run: |
+          git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code \
+            b8b412fcb1696491f7554ceb2d5891c543a76ae0 -- \
+            src CMakeLists.txt autostart translations
       - name: Build the complete application
         run: |
           { cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DUPDATE_TRANSLATIONS=OFF \
@@ -31,7 +36,7 @@ jobs:
         run: |
           python3 test/test_retry_completion.py > /tmp/gcc-tests.log 2>&1 \
             || { tail -n 100 /tmp/gcc-tests.log; exit 1; }
-          tail -n 4 /tmp/gcc-tests.log
+          grep -E 'review_|100% tests passed' /tmp/gcc-tests.log
           CXX=clang++ python3 test/test_retry_completion.py > /tmp/clang-tests.log 2>&1 \
             || { tail -n 100 /tmp/clang-tests.log; exit 1; }
           tail -n 4 /tmp/clang-tests.log
