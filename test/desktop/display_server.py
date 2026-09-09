@@ -54,6 +54,7 @@ class Desktop:
         self.handles = []
         self.pointer_binary = pointer_binary
         self.pointer = None
+        self.keyboard = None
 
     def spawn(self, args, logfile):
         handle = (self.output / logfile).open('w')
@@ -120,16 +121,20 @@ bindsym Mod1+F4 kill
                 return (sockets[0], displays[0]) if sockets and displays else None
             socket, display = until(socket_ready, 'private Wayland and Sway IPC sockets')
             self.env.update(SWAYSOCK=str(socket), WAYLAND_DISPLAY=display.name)
-            # Keep input devices on seat0 while individual keyboard clients come/go.
-            self.spawn(['wtype', '-s', '600000'], 'wayland-seat.log')
-            until(lambda: self.sway('-t', 'get_seats')[0].get('capabilities', 0) & 2,
-                  'Wayland keyboard seat')
+            # Keep the same keyboard and keymap across every popup interaction.
+            handle = (self.output / 'wayland-keyboard.log').open('w')
+            self.handles.append(handle)
+            self.keyboard = subprocess.Popen([str(self.pointer_binary.with_name('desktop_keyboard'))],
+                                             env=self.env, stdin=subprocess.PIPE,
+                                             stdout=subprocess.PIPE, stderr=handle)
+            self.processes.append(self.keyboard)
+            self.input_reply(self.keyboard, b'READY', 'keyboard')
             handle = (self.output / 'wayland-pointer.log').open('w')
             self.handles.append(handle)
             self.pointer = subprocess.Popen([str(self.pointer_binary)], env=self.env,
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=handle)
             self.processes.append(self.pointer)
-            self.pointer_reply(b'READY')
+            self.input_reply(self.pointer, b'READY', 'pointer')
             until(lambda: self.sway('-t', 'get_seats')[0].get('capabilities', 0) & 3 == 3,
                   'Wayland pointer and keyboard capabilities')
             outputs = [output for output in self.sway('-t', 'get_outputs') if output['active']]
@@ -200,21 +205,22 @@ bindsym Mod1+F4 kill
         if self.backend == 'x11':
             command(['xdotool', 'key', '--clearmodifiers', *keys], self.env)
         else:
-            # Keep one virtual keyboard and keymap for a popup interaction.
-            # Destroying it between selection and Return can dismiss the popup.
-            arguments = ['wtype']
             for key in keys:
-                if key == 'alt+F4':
-                    arguments += ['-M', 'alt', '-k', 'F4', '-m', 'alt']
-                else:
-                    arguments += ['-k', key]
-            command(arguments, self.env)
+                self.keyboard_command('key ' + key)
 
     def type_text(self, text):
         if self.backend == 'x11':
             command(['xdotool', 'type', '--clearmodifiers', '--delay', '10', text], self.env)
         else:
-            command(['wtype', '-d', '10', text], self.env)
+            self.keyboard_command('text ' + text)
+
+    def keyboard_command(self, text):
+        require('\n' not in text and '\r' not in text, 'Keyboard command contains a newline')
+        payload = text.encode('ascii') + b'\n'
+        require(len(payload) < 1024, 'Keyboard command is too long')
+        self.keyboard.stdin.write(payload)
+        self.keyboard.stdin.flush()
+        self.input_reply(self.keyboard, b'OK', 'keyboard')
 
     def click(self, probe, kind, name):
         state, window, native = self.mapped(probe, kind)
@@ -229,15 +235,15 @@ bindsym Mod1+F4 kill
             width, height = self.extent
             self.pointer.stdin.write(f'{x} {y} {width} {height}\n'.encode())
             self.pointer.stdin.flush()
-            self.pointer_reply(b'OK')
+            self.input_reply(self.pointer, b'OK', 'pointer')
         until(lambda: probe.request()['native_clicks'] > state['native_clicks'],
               'server-delivered spontaneous pointer event')
 
-    def pointer_reply(self, expected):
-        require(select.select([self.pointer.stdout], [], [], 8)[0],
-                'Virtual pointer did not acknowledge the server request')
-        require(self.pointer.stdout.readline().strip() == expected,
-                'Virtual pointer connection failed; see wayland-pointer.log')
+    def input_reply(self, process, expected, device):
+        require(select.select([process.stdout], [], [], 8)[0],
+                f'Virtual {device} did not acknowledge the server request')
+        require(process.stdout.readline().strip() == expected,
+                f'Virtual {device} connection failed; see wayland-{device}.log')
 
     def no_windows(self, pid):
         if self.backend == 'wayland':
@@ -261,8 +267,9 @@ bindsym Mod1+F4 kill
     def close(self):
         for process in reversed(self.processes):
             stop(process)
-        if self.pointer:
-            self.pointer.stdin.close()
-            self.pointer.stdout.close()
+        for process in (self.keyboard, self.pointer):
+            if process:
+                process.stdin.close()
+                process.stdout.close()
         for handle in self.handles:
             handle.close()
