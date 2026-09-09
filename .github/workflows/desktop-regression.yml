@@ -1,0 +1,90 @@
+name: Desktop authentication regression
+on:
+  push:
+    branches: [validation/retry-authentication-cancel]
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full production SHA; defaults to test/production-revision
+        required: false
+        type: string
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  desktop:
+    name: Native ${{ matrix.backend }}
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [x11, wayland]
+    env:
+      REQUESTED_CANDIDATE: ${{ inputs.candidate_sha }}
+      DESKTOP_BACKEND: ${{ matrix.backend }}
+    steps:
+      - name: Install compiler and real display servers
+        run: |
+          dnf install -y git gcc-c++ cmake ninja-build python3 qt6-qtbase-devel \
+            polkit-devel polkit-qt6-1-devel qt6-qtwayland \
+            xorg-x11-server-Xvfb xorg-x11-xauth openbox xdotool xdpyinfo xprop xwininfo \
+            sway wtype grim dbus-daemon util-linux shadow-utils dejavu-sans-fonts \
+            > /tmp/desktop-dependencies.log 2>&1 \
+            || { tail -n 100 /tmp/desktop-dependencies.log; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select the exact production candidate
+        run: |
+          candidate="${REQUESTED_CANDIDATE:-$(cat test/production-revision)}"
+          [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full commit SHA is required'; exit 1; }
+          git -c safe.directory="$GITHUB_WORKSPACE" cat-file -e "$candidate^{commit}"
+          git -c safe.directory="$GITHUB_WORKSPACE" worktree add --detach "$RUNNER_TEMP/production" "$candidate"
+          echo "CANDIDATE_SHA=$candidate" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/desktop-results"
+          {
+            echo "Production: $candidate"
+            echo "Validation: $GITHUB_SHA"
+            rpm -q qt6-qtbase-devel qt6-qtwayland polkit-qt6-1-devel \
+              xorg-x11-server-Xvfb openbox sway wtype xdotool
+          } > "$RUNNER_TEMP/desktop-results/versions.txt"
+      - name: Compile the production agent and observation endpoint
+        run: |
+          cmake -S test/desktop -B "$RUNNER_TEMP/desktop-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DAGENT_SOURCE_DIR="$RUNNER_TEMP/production" \
+            > "$RUNNER_TEMP/desktop-results/build.log" 2>&1
+          cmake --build "$RUNNER_TEMP/desktop-build" --parallel 2 \
+            >> "$RUNNER_TEMP/desktop-results/build.log" 2>&1 \
+            || { tail -n 100 "$RUNNER_TEMP/desktop-results/build.log"; exit 1; }
+      - name: Run unprivileged native desktop scenarios
+        run: |
+          useradd --create-home --uid 1000 desktop-test
+          chown desktop-test:desktop-test "$RUNNER_TEMP/desktop-results"
+          runuser -u desktop-test -- env HOME=/home/desktop-test \
+            dbus-run-session -- python3 test/desktop/run_desktop.py \
+            --backend "$DESKTOP_BACKEND" \
+            --binary "$RUNNER_TEMP/desktop-build/desktop_agent" \
+            --results-dir "$RUNNER_TEMP/desktop-results" \
+            2>&1 | tee "$RUNNER_TEMP/desktop-results/runner.log"
+      - name: Verify production files were not changed
+        if: always()
+        run: |
+          git -c safe.directory="$RUNNER_TEMP/production" -C "$RUNNER_TEMP/production" diff --exit-code
+          test -z "$(git -c safe.directory="$RUNNER_TEMP/production" -C "$RUNNER_TEMP/production" ls-files --others --exclude-standard)"
+      - name: Collect dependency diagnostics
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/desktop-results"
+          cp /tmp/desktop-dependencies.log "$RUNNER_TEMP/desktop-results/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: desktop-${{ matrix.backend }}-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-results
+          if-no-files-found: error
+          retention-days: 30
