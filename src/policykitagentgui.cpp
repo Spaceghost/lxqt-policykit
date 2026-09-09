@@ -26,6 +26,7 @@
  * END_COMMON_COPYRIGHT_HEADER */
 
 #include <QIcon>
+#include <QKeyEvent>
 #include "policykitagentgui.h"
 #include <unistd.h>
 
@@ -68,6 +69,18 @@ PolicykitAgentGUI::PolicykitAgentGUI(const QString &actionId,
 
 PolicykitAgentGUI::~PolicykitAgentGUI() = default;
 
+void PolicykitAgentGUI::keyPressEvent(QKeyEvent *event)
+{
+    // Return used to choose an identity must not activate the default OK button.
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && identityComboBox->hasFocus())
+    {
+        event->accept();
+        return;
+    }
+    QDialog::keyPressEvent(event);
+}
+
 void PolicykitAgentGUI::setPromptLabel(const QString &text)
 {
     if (QString::compare(text.trimmed(), QLatin1StringView("Password:"), Qt::CaseInsensitive) == 0)
@@ -90,6 +103,14 @@ void PolicykitAgentGUI::setPrompt(const PolkitQt1::Identity &identity, const QSt
             passwordEdit->setEchoMode(echo ? QLineEdit::Normal : QLineEdit::Password);
         }
     }
+}
+
+void PolicykitAgentGUI::removeIdentity(const PolkitQt1::Identity &identity)
+{
+    const int ix = identityComboBox->findText(identity.toString());
+    // Keep the selected identity for a possible fresh authentication attempt.
+    if (ix != -1 && ix != identityComboBox->currentIndex())
+        identityComboBox->removeItem(ix);
 }
 
 QString PolicykitAgentGUI::identity()
