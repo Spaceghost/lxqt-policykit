@@ -30,7 +30,7 @@ jobs:
       - name: Install compiler and real display servers
         run: |
           dnf install -y git gcc-c++ cmake ninja-build python3 qt6-qtbase-devel \
-            polkit-devel polkit-qt6-1-devel qt6-qtwayland \
+            polkit-devel polkit-qt6-1-devel qt6-qtwayland wayland-devel wlr-protocols-devel \
             xorg-x11-server-Xvfb xorg-x11-xauth openbox xdotool xdpyinfo xprop xwininfo \
             sway wtype grim dbus-daemon util-linux shadow-utils dejavu-sans-fonts \
             > /tmp/desktop-dependencies.log 2>&1 \

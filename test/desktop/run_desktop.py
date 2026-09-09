@@ -22,6 +22,7 @@ import traceback
 import xml.etree.ElementTree as ET
 
 from display_server import Desktop, require, until, stop
+
 CASES = (
     'password_mouse_cancel', 'password_escape', 'password_window_close',
     'retry_mouse_cancel', 'retry_escape', 'retry_window_close',
@@ -70,7 +71,6 @@ class Probe:
         self.selector.close()
         self.process.stdout.close()
         self.log.close()
-
 
 
 def question(desktop, probe):
@@ -250,7 +250,7 @@ def execute(args):
         env.update(XDG_RUNTIME_DIR=str(runtime), QT_QPA_PLATFORM='xcb' if args.backend == 'x11' else 'wayland',
                    DESKTOP_EXPECTED_QPA='xcb' if args.backend == 'x11' else 'wayland',
                    QT_ACCESSIBILITY='0', LC_ALL='C.UTF-8')
-        desktop = Desktop(args.backend, env, destination)
+        desktop = Desktop(args.backend, env, destination, args.binary.with_name('desktop_pointer'))
         outcomes = []
         try:
             desktop.start(runtime)
@@ -271,6 +271,9 @@ def execute(args):
                 print(f'{"FAIL" if error else "PASS"}: {args.backend}/{name}', flush=True)
                 if error:
                     print(error, flush=True)
+        except Exception:
+            outcomes.append(dict(name='display_setup', seconds=0, error=traceback.format_exc()))
+            raise
         finally:
             desktop.close()
             (destination / 'results.json').write_text(json.dumps(outcomes, indent=2))

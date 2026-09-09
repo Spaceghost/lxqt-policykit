@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(lxqt_policykit_desktop_tests LANGUAGES CXX)
+project(lxqt_policykit_desktop_tests LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,3 +34,22 @@ target_link_options(desktop_agent PRIVATE -Wl,--export-dynamic)
 target_compile_options(desktop_agent PRIVATE
     -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-unused-function
 )
+
+# Generate bindings from the distribution's protocol definitions, not vendored code.
+pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
+pkg_get_variable(WLR_PROTOCOLS_DIR wlr-protocols pkgdatadir)
+find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+set(POINTER_XML "${WLR_PROTOCOLS_DIR}/unstable/wlr-virtual-pointer-unstable-v1.xml")
+if(NOT EXISTS "${POINTER_XML}")
+    message(FATAL_ERROR "The wlr-protocols development package is required")
+endif()
+add_custom_command(OUTPUT virtual-pointer-client.h
+    COMMAND ${WAYLAND_SCANNER} client-header ${POINTER_XML} virtual-pointer-client.h
+    DEPENDS ${POINTER_XML} VERBATIM)
+add_custom_command(OUTPUT virtual-pointer-protocol.c
+    COMMAND ${WAYLAND_SCANNER} private-code ${POINTER_XML} virtual-pointer-protocol.c
+    DEPENDS ${POINTER_XML} VERBATIM)
+add_executable(desktop_pointer desktop_pointer.c virtual-pointer-client.h virtual-pointer-protocol.c)
+set_target_properties(desktop_pointer PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+target_link_libraries(desktop_pointer PRIVATE PkgConfig::WAYLAND_CLIENT)
+target_compile_options(desktop_pointer PRIVATE -Wall -Wextra -Werror)

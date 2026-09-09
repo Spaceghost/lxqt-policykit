@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import subprocess
 import time
@@ -45,12 +46,14 @@ def stop(process):
 
 
 class Desktop:
-    def __init__(self, backend, env, output):
+    def __init__(self, backend, env, output, pointer_binary):
         self.backend = backend
         self.env = env
         self.output = output
         self.processes = []
         self.handles = []
+        self.pointer_binary = pointer_binary
+        self.pointer = None
 
     def spawn(self, args, logfile):
         handle = (self.output / logfile).open('w')
@@ -66,10 +69,6 @@ class Desktop:
     def sway(self, *args):
         self.check_alive()
         return json.loads(command(['swaymsg', '-r', '-s', self.env['SWAYSOCK'], *args], self.env))
-
-    def sway_command(self, text):
-        response = self.sway(text)
-        require(all(item.get('success') for item in response), f'Sway command rejected: {response}')
 
     def start(self, runtime):
         if self.backend == 'x11':
@@ -121,10 +120,22 @@ bindsym Mod1+F4 kill
                 return (sockets[0], displays[0]) if sockets and displays else None
             socket, display = until(socket_ready, 'private Wayland and Sway IPC sockets')
             self.env.update(SWAYSOCK=str(socket), WAYLAND_DISPLAY=display.name)
-            # Keep a keyboard on seat0 while individual injection clients come/go.
+            # Keep input devices on seat0 while individual keyboard clients come/go.
             self.spawn(['wtype', '-s', '600000'], 'wayland-seat.log')
             until(lambda: self.sway('-t', 'get_seats')[0].get('capabilities', 0) & 2,
                   'Wayland keyboard seat')
+            handle = (self.output / 'wayland-pointer.log').open('w')
+            self.handles.append(handle)
+            self.pointer = subprocess.Popen([str(self.pointer_binary)], env=self.env,
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=handle)
+            self.processes.append(self.pointer)
+            self.pointer_reply(b'READY')
+            until(lambda: self.sway('-t', 'get_seats')[0].get('capabilities', 0) & 3 == 3,
+                  'Wayland pointer and keyboard capabilities')
+            outputs = [output for output in self.sway('-t', 'get_outputs') if output['active']]
+            require(len(outputs) == 1 and outputs[0]['rect']['x'] == 0 and outputs[0]['rect']['y'] == 0,
+                    'Expected one private output at the origin')
+            self.extent = outputs[0]['rect']['width'], outputs[0]['rect']['height']
             (self.output / 'wayland-server.json').write_text(json.dumps({
                 'version': self.sway('-t', 'get_version'),
                 'outputs': self.sway('-t', 'get_outputs'),
@@ -204,13 +215,22 @@ bindsym Mod1+F4 kill
         require(point['enabled'], f'{kind}/{name} is disabled')
         x, y = native['x'] + point['x'], native['y'] + point['y']
         if self.backend == 'x11':
-            command(['xdotool', 'mousemove', '--sync', str(x), str(y), 'click', '1'], self.env)
+            # XTEST requests are ordered. --sync would wait forever when the
+            # cursor already occupies this position on a subsequent request.
+            command(['xdotool', 'mousemove', str(x), str(y), 'click', '1'], self.env)
         else:
-            self.sway_command(f'seat seat0 cursor set {x} {y}')
-            self.sway_command('seat seat0 cursor press button1')
-            self.sway_command('seat seat0 cursor release button1')
+            width, height = self.extent
+            self.pointer.stdin.write(f'{x} {y} {width} {height}\n'.encode())
+            self.pointer.stdin.flush()
+            self.pointer_reply(b'OK')
         until(lambda: probe.request()['native_clicks'] > state['native_clicks'],
               'server-delivered spontaneous pointer event')
+
+    def pointer_reply(self, expected):
+        require(select.select([self.pointer.stdout], [], [], 8)[0],
+                'Virtual pointer did not acknowledge the server request')
+        require(self.pointer.stdout.readline().strip() == expected,
+                'Virtual pointer connection failed; see wayland-pointer.log')
 
     def no_windows(self, pid):
         if self.backend == 'wayland':
@@ -234,5 +254,8 @@ bindsym Mod1+F4 kill
     def close(self):
         for process in reversed(self.processes):
             stop(process)
+        if self.pointer:
+            self.pointer.stdin.close()
+            self.pointer.stdout.close()
         for handle in self.handles:
             handle.close()

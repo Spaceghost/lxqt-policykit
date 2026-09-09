@@ -11,18 +11,17 @@ from the offscreen lifecycle suite and remain on the validation branch.
   `--window` event delivery. Alt+F4 goes through Openbox's close binding.
 - Wayland uses Sway's headless backend and software rendering, with Qt's
   `wayland` plugin. Xwayland is disabled and DISPLAY is removed. Keyboard input
-  arrives via `wtype`'s virtual-keyboard protocol. Sway seat cursor commands
-  deliver pointer input through the compositor; Alt+F4 produces a native
-  toplevel close request. Those cursor IPC commands are Sway-specific and
-  deprecated upstream; their success is checked, not silently ignored.
+  arrives via `wtype`'s virtual-keyboard protocol. A persistent `desktop_pointer`
+  client sends absolute motion and button frames via the virtual-pointer
+  protocol. The compositor must advertise both pointer and keyboard capabilities
+  before any Qt client is started. Alt+F4 produces a native toplevel close request.
 - Each window must be exposed in Qt and independently present in the server's
   window tree, owned by the expected PID, and focused in both views. Sway
   toplevels must be `xdg_shell`, never Xwayland. The driver does not forcibly
   focus an authentication window to hide focus failures.
 - The Qt event filter records spontaneous input. Tests type into and click the
-  actual production widgets, and assert that native input arrived. There are
-  no QTest input calls, `accept()`, `reject()`, `done()`, or button `click()` calls
-  on authentication dialogs in this endpoint or driver.
+  actual production widgets, and assert that native input arrived. No QTest
+  input calls or direct dialog/button invocations drive these scenarios.
 
 The observation endpoint reuses the existing deterministic native helper
 fixture. Its commands start an authentication request, supply a backend result
@@ -59,10 +58,12 @@ wrong plugins, server crashes, timeouts, and unexpected dialogs fail the run.
 ## Running
 
 Install Qt 6 Widgets/Test, PolkitQt6 and Polkit development files, a C++17
-compiler, CMake, Python 3, and the applicable server/input tools. X11 needs
-Xvfb, xvfb-run, xauth, Openbox, xdotool, xdpyinfo, xprop, and xwininfo. Wayland
-needs Sway, wtype, grim, the Qt Wayland plugin, and fonts. A private D-Bus
-session is recommended for both.
+compiler, CMake, Python 3, Wayland client development files, wayland-scanner,
+wlr-protocols development files, and the applicable server/input tools. Protocol
+bindings are generated from the installed XML, not copied into the repository.
+X11 needs Xvfb, xvfb-run, xauth, Openbox, xdotool, xdpyinfo, xprop, and xwininfo.
+Wayland needs Sway, wtype, grim, the Qt Wayland plugin, and fonts. A private
+D-Bus session is recommended for both.
 
 ```sh
 cmake -S test/desktop -B /tmp/lxqt-desktop-build \
@@ -77,5 +78,6 @@ dbus-run-session -- python3 test/desktop/run_desktop.py --backend wayland \
 
 The runner creates private servers, ignores inherited display addresses,
 uses a private Xauthority cookie or mode-0700 Wayland runtime directory, and
-cleans up its own processes. No real desktop, hardware seat, privileged
-container, host PAM configuration, or existing login session is needed.
+cleans up its own processes. For capability-bearing Sway packages it runs a
+byte-identical private copy without file capabilities. It does not grant
+container privileges, use a physical input seat, or change host PAM policy.
