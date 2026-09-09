@@ -53,17 +53,3 @@ add_executable(desktop_pointer desktop_pointer.c virtual-pointer-client.h virtua
 set_target_properties(desktop_pointer PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 target_link_libraries(desktop_pointer PRIVATE PkgConfig::WAYLAND_CLIENT)
 target_compile_options(desktop_pointer PRIVATE -Wall -Wextra -Werror)
-
-# A persistent keyboard prevents device/keymap changes from dismissing popups.
-pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
-set(KEYBOARD_XML "${CMAKE_CURRENT_SOURCE_DIR}/virtual-keyboard.xml")
-add_custom_command(OUTPUT virtual-keyboard-client.h
-    COMMAND ${WAYLAND_SCANNER} client-header ${KEYBOARD_XML} virtual-keyboard-client.h
-    DEPENDS ${KEYBOARD_XML} VERBATIM)
-add_custom_command(OUTPUT virtual-keyboard-protocol.c
-    COMMAND ${WAYLAND_SCANNER} private-code ${KEYBOARD_XML} virtual-keyboard-protocol.c
-    DEPENDS ${KEYBOARD_XML} VERBATIM)
-add_executable(desktop_keyboard desktop_keyboard.c virtual-keyboard-client.h virtual-keyboard-protocol.c)
-set_target_properties(desktop_keyboard PROPERTIES AUTOMOC OFF AUTOUIC OFF)
-target_link_libraries(desktop_keyboard PRIVATE PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
-target_compile_options(desktop_keyboard PRIVATE -Wall -Wextra -Werror)

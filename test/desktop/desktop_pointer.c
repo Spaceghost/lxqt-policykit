@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // A persistent, unprivileged Wayland input client for the private test server.
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,27 +58,42 @@ int main(void)
     puts("READY");
     fflush(stdout);
 
+    bool pressed = false;
     char line[128];
     while (fgets(line, sizeof(line), stdin))
     {
         unsigned int x, y, width, height;
         char extra;
-        if (sscanf(line, "%u %u %u %u %c", &x, &y, &width, &height, &extra) != 4
-            || !width || !height || x >= width || y >= height)
-            return 2;
-        zwlr_virtual_pointer_v1_motion_absolute(pointer, milliseconds(), x, y, width, height);
-        zwlr_virtual_pointer_v1_frame(pointer);
-        // Establish pointer focus before pressing, then send both button states.
-        if (wl_display_roundtrip(display) < 0)
-            return 2;
-        zwlr_virtual_pointer_v1_button(pointer, milliseconds(), 0x110, WL_POINTER_BUTTON_STATE_PRESSED);
-        zwlr_virtual_pointer_v1_frame(pointer);
-        zwlr_virtual_pointer_v1_button(pointer, milliseconds(), 0x110, WL_POINTER_BUTTON_STATE_RELEASED);
-        zwlr_virtual_pointer_v1_frame(pointer);
+        if (strcmp(line, "release\n") == 0)
+        {
+            if (!pressed)
+                return 2;
+            zwlr_virtual_pointer_v1_button(pointer, milliseconds(), 0x110, WL_POINTER_BUTTON_STATE_RELEASED);
+            zwlr_virtual_pointer_v1_frame(pointer);
+            pressed = false;
+        }
+        else
+        {
+            if (pressed || sscanf(line, "press %u %u %u %u %c", &x, &y, &width, &height, &extra) != 4
+                || !width || !height || x >= width || y >= height)
+                return 2;
+            zwlr_virtual_pointer_v1_motion_absolute(pointer, milliseconds(), x, y, width, height);
+            zwlr_virtual_pointer_v1_frame(pointer);
+            if (wl_display_roundtrip(display) < 0)
+                return 2;
+            zwlr_virtual_pointer_v1_button(pointer, milliseconds(), 0x110, WL_POINTER_BUTTON_STATE_PRESSED);
+            zwlr_virtual_pointer_v1_frame(pointer);
+            pressed = true;
+        }
         if (wl_display_roundtrip(display) < 0)
             return 2;
         puts("OK");
         fflush(stdout);
+    }
+    if (pressed)
+    {
+        zwlr_virtual_pointer_v1_button(pointer, milliseconds(), 0x110, WL_POINTER_BUTTON_STATE_RELEASED);
+        zwlr_virtual_pointer_v1_frame(pointer);
     }
     zwlr_virtual_pointer_v1_destroy(pointer);
     zwlr_virtual_pointer_manager_v1_destroy(manager);
