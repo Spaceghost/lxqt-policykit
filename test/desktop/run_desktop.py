@@ -146,12 +146,17 @@ def run_case(name, desktop, binary, destination):
             finished(desktop, probe, 6, 4)
         elif name == 'second_identity_retry':
             desktop.click(probe, 'password', 'identity')
-            desktop.key('End')
-            desktop.key('Return')
+            # Select and confirm with one keyboard connection, without replacing
+            # the Wayland keyboard/keymap while the combo popup is open.
+            desktop.key('End', 'Return')
+            state = probe.request()
+            require(state['results'] == [0] and all(h['responses'] == 0 for h in state['helpers']),
+                    'Selecting an identity must not submit an authentication response')
             # Give the editable challenge focus by clicking it through the server.
             desktop.click(probe, 'password', 'password')
             require(desktop.mapped(probe, 'password')[1]['identity'] == 'unix-user:2000',
                     'Server input did not select the second identity')
+            desktop.capture(probe, directory, 'identity-selected')
             submit(desktop, probe)
             question(desktop, probe)
             desktop.key('Return')

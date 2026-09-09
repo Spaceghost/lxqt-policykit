@@ -195,13 +195,20 @@ bindsym Mod1+F4 kill
             return state, window, native
         return until(ready, f'{kind} must be exposed, mapped and {"focused" if focused else "visible"}')
 
-    def key(self, key):
+    def key(self, *keys):
+        require(keys, 'At least one key is required')
         if self.backend == 'x11':
-            command(['xdotool', 'key', '--clearmodifiers', key], self.env)
-        elif key == 'alt+F4':
-            command(['wtype', '-M', 'alt', '-k', 'F4', '-m', 'alt'], self.env)
+            command(['xdotool', 'key', '--clearmodifiers', *keys], self.env)
         else:
-            command(['wtype', '-k', key], self.env)
+            # Keep one virtual keyboard and keymap for a popup interaction.
+            # Destroying it between selection and Return can dismiss the popup.
+            arguments = ['wtype']
+            for key in keys:
+                if key == 'alt+F4':
+                    arguments += ['-M', 'alt', '-k', 'F4', '-m', 'alt']
+                else:
+                    arguments += ['-k', key]
+            command(arguments, self.env)
 
     def type_text(self, text):
         if self.backend == 'x11':
