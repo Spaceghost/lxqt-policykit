@@ -67,6 +67,8 @@ public:
 public slots:
     void onIdentityChanged(int index);
 
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
 };
 
 } // namespace

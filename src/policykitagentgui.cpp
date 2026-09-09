@@ -26,6 +26,7 @@
  * END_COMMON_COPYRIGHT_HEADER */
 
 #include <QIcon>
+#include <QKeyEvent>
 #include "policykitagentgui.h"
 #include <unistd.h>
 
@@ -67,6 +68,18 @@ PolicykitAgentGUI::PolicykitAgentGUI(const QString &actionId,
 }
 
 PolicykitAgentGUI::~PolicykitAgentGUI() = default;
+
+void PolicykitAgentGUI::keyPressEvent(QKeyEvent *event)
+{
+    // Return used to choose an identity must not activate the default OK button.
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && identityComboBox->hasFocus())
+    {
+        event->accept();
+        return;
+    }
+    QDialog::keyPressEvent(event);
+}
 
 void PolicykitAgentGUI::setPromptLabel(const QString &text)
 {
