@@ -146,8 +146,12 @@ def run_case(name, desktop, binary, destination):
             finished(desktop, probe, 6, 4)
         elif name == 'second_identity_retry':
             desktop.click(probe, 'password', 'identity')
-            # Select and confirm with one keyboard connection, without replacing
-            # the Wayland keyboard/keymap while the combo popup is open.
+            # A delivered click is not proof that an asynchronous native popup
+            # is ready for keyboard input. Observe it before sending selection.
+            until(lambda: any(w['kind'] == 'popup' and w['exposed'] and w['popup_active']
+                              for w in probe.request()['windows']),
+                  'identity dropdown must be exposed and active')
+            desktop.capture(probe, directory, 'identity-popup')
             desktop.key('End', 'Return')
             state = probe.request()
             require(state['results'] == [0] and all(h['responses'] == 0 for h in state['helpers']),

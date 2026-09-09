@@ -85,6 +85,11 @@ static QJsonObject snapshot(const std::vector<std::unique_ptr<Result>> &results,
                     controls[choice == QMessageBox::Ok ? "ok" : "cancel"] = control(button, widget);
             }
         }
+        else if (widget->windowType() == Qt::Popup)
+        {
+            item["kind"] = "popup";
+            item["popup_active"] = QApplication::activePopupWidget() == widget;
+        }
         else
         {
             item["kind"] = "requester";
