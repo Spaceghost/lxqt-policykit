@@ -1,9 +1,14 @@
 # Authentication retry and cancellation validation
 
-The tests live on `validation/retry-authentication-cancel`, separately from
-the single production commit. `test/production-revision` records the exact
-production candidate. The workflow checks out that commit in a separate
-worktree and compiles the tests against its unmodified production files.
+`retry-authentication` remains the original upstream PR branch.
+`validation/retry-authentication` contains the complete cancellation and
+identity-selection fixes, regression tests, native X11/Wayland tests, and CI.
+
+The single production commit and the earlier validation history are both
+ancestors of this branch, so removing temporary branches does not discard
+code or historical regression inputs. `test/production-revision` records the
+exact production candidate. Both workflows check out that commit in a separate
+worktree and compile the tests against its unmodified production files.
 
 ## Run the suite
 

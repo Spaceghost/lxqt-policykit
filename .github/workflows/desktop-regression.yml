@@ -1,7 +1,7 @@
 name: Desktop authentication regression
 on:
   push:
-    branches: [validation/retry-authentication-cancel]
+    branches: [validation/retry-authentication]
   workflow_dispatch:
     inputs:
       candidate_sha:
